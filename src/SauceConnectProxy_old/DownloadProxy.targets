@@ -1,0 +1,49 @@
+﻿<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<UsingTask  
+    TaskName="GetAndUnPackSauceProxy"  
+    TaskFactory="CodeTaskFactory"  
+    AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.v4.0.dll" >  
+    <ParameterGroup />  
+    <Task>  
+      <Reference Include="System.Xml"/>  
+      <Using Namespace="System"/>  
+      <Using Namespace="System.IO"/>
+      <Using Namespace="System.IO.Compression"/>
+      <Using Namespace="System.Net"/>
+      <Using Namespace="System.Text.RegularExpressions"/>
+      <Using Namespace="Newtonsoft.Json"/>
+      <Code Type="Fragment" Language="cs">  
+        <![CDATA[  
+            WebRequest request = WebRequest.Create(new Uri("https://saucelabs.com/versions.json"));
+            request.ContentType = "application/json";
+
+            var response = request.GetResponseAsync().Result;
+            var reader = new StreamReader(response.GetResponseStream());
+            var data = new Regex("((?<=Sauce) (?=Connect)|(?<=Connect) (?=\\d))").Replace(reader.ReadToEnd(), string.Empty);
+
+            var versionData = new
+            {
+                SauceConnect = new
+                {
+                    version = string.Empty,
+                    win32 = new
+                    {
+                        build = string.Empty,
+                        download_url = default(Uri),
+                        sha1 = string.Empty
+                    }
+                }
+            };
+            var path = Path.Combine(Environment.CurrentDirectory, "sc.zip");
+            var stuff = JsonConvert.DeserializeAnonymousType(data, versionData);
+            using (var client = new WebClient())
+            {
+                client.DownloadFile(stuff.SauceConnect.win32.download_url, path);
+            }
+
+            ZipFile.ExtractToDirectory(path, Path.Combine(Environment.CurrentDirectory, "sc2"));
+]]>  
+      </Code>  
+    </Task>  
+  </UsingTask>  
+</Project>  

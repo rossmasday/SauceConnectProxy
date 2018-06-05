@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>SauceConnectProxy</id>
+    <version>$version$</version>
+    <authors>Ross Ackland</authors>
+    <owners>Ross Ackland</owners>
+    <title>SauceConnectProxy</title>
+    <description>Allows programmatic startup of the Sauce Connect Proxy.</description>
+    <summary>Deploys the Sauce Labs Connect proxy to the bin directory and includes code to launch it.</summary>
+    <language>en-US</language>
+    <copyright>Copyright © 2018.</copyright>
+    <projectUrl>https://github.com/rossmasday/SauceConnectProxy</projectUrl>
+    <licenseUrl>https://github.com/rossmasday/SauceConnectProxy/blob/master/LICENSE</licenseUrl>
+    <iconUrl>https://pbs.twimg.com/profile_images/704462412880093184/IkgItC1R_bigger.jpg</iconUrl>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <developmentDependency>true</developmentDependency>
+    <tags></tags>
+  </metadata>
+  <files>
+    <file src="build\*.*" target="build" />
+    <file src="proxy\*.*" target="proxy" />
+  </files>
+</package>

@@ -1,0 +1,9 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="CopySauceConnectProxyToBin" BeforeTargets="AfterBuild">
+    <PropertyGroup>
+      <SauceConnectProxySrcPath>$(MSBuildThisFileDirectory)..\proxy\sc.exe</SauceConnectProxySrcPath>
+      <SauceConnectProxyTargetPath Condition=" '$(SauceConnectProxyTargetPath)' == '' ">$(TargetDir)</SauceConnectProxyTargetPath>
+    </PropertyGroup>
+    <Copy SourceFiles="$(SauceConnectProxySrcPath)" DestinationFiles="$(SauceConnectProxyTargetPath)sc.exe" SkipUnchangedFiles="true"></Copy>
+  </Target>
+</Project>
