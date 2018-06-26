@@ -44,10 +44,10 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="EnvironmentConfig.cs" />
     <Compile Include="Model\TunnelStatus.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="SauceConnectProxy.cs" />
-    <Compile Include="SauceConnectProxyException.cs" />
     <Compile Include="SauceConnectRestClient.cs" />
     <Compile Include="Model\TunnelDeleted.cs" />
     <Compile Include="Model\TunnelInformation.cs" />

@@ -1,51 +1,92 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using SauceConnectProxy.Model;
-using static System.FormattableString;
-
-namespace SauceConnectProxy
+﻿namespace SauceConnectProxy
 {
+    using System;
+    using System.Collections.Generic;
+    using System.Diagnostics;
+    using System.IO;
+    using System.Linq;
+    using System.Text;
+    using System.Threading;
+    using System.Threading.Tasks;
+    using Model;
+    using static System.FormattableString;
+    using UriBuilder = System.UriBuilder;
+
     public sealed class SauceConnectProxy : IDisposable
     {
+        private readonly int port;
         private const string FailedToInitiateConnectionText = "Goodbye.";
         private const string SuccessfullConnectionText = "you may start your tests.";
         private const string ExecutableName = "sc.exe";
         private const string UserArgumentName = "--user";
         private const string AccessKeyArgumentName = "--api-key";
-        private const string TunnelIdArguementName = "--tunnel-identifier";
+        private const string TunnelIdArgumentName = "--tunnel-identifier";
         private readonly string proxyDirectory;
         private readonly SauceConnectRestClient sauceConnectRestClient;
         private readonly IDictionary<string, string> arguments;
-        private readonly TimeSpan startTimeout;
+        private readonly TimeSpan timeout;
         private Process process;
         private TunnelInformation information;
-        private readonly string username;
 
-        public SauceConnectProxy(string user, string accessToken, int port)
-            : this(user, accessToken, port, default(TimeSpan))
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class with default Sauce labs environment variable setting for username and access key.
+        /// </summary>
+        /// <param name="port">The port to use.</param>
+        public SauceConnectProxy(int port)
+            : this(EnvironmentConfig.SauceUsername, EnvironmentConfig.SauceAccessKey, port)
         {
         }
 
-        public SauceConnectProxy(string user, string accessToken, int port, TimeSpan startTimeout)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
+        /// </summary>
+        /// <param name="port">The port to use.</param>
+        /// <param name="timeout"></param>
+        public SauceConnectProxy(int port, TimeSpan timeout)
+            : this(EnvironmentConfig.SauceUsername, EnvironmentConfig.SauceAccessKey, port, timeout)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
+        /// </summary>
+        /// <param name="username">The usename to use to connect to the Sauce Labs.</param>
+        /// <param name="accessKey">The access key to use to connect to Sauce Labs.</param>
+        /// <param name="port">The port to use.</param>
+        public SauceConnectProxy(string username, string accessKey, int port)
+            : this(username, accessKey, port, default(TimeSpan))
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
+        /// </summary>
+        /// <param name="username">The usename to use to connect to the Sauce Labs.</param>
+        /// <param name="accessKey">The access key to use to connect to Sauce Labs.</param>
+        /// <param name="port">The port to use.</param>
+        /// <param name="timeout">Timeout for start up, if none is specified it will be 5 minutes.</param>
+        public SauceConnectProxy(string username, string accessKey, int port, TimeSpan timeout)
             : this(Directory.GetCurrentDirectory(), new Dictionary<string, string>
             {
-                { UserArgumentName, user },
-                { AccessKeyArgumentName, accessToken },
+                { UserArgumentName, username },
+                { AccessKeyArgumentName, accessKey },
                 { "--se-port", port.ToString() }
-            }, startTimeout)
+            }, timeout)
         {
+            this.port = port;
         }
 
-        public SauceConnectProxy(string proxyDirectory, IDictionary<string, string> launchArguments, TimeSpan startTimeout)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
+        /// </summary>
+        /// <param name="proxyDirectory">The directory containing the proxy exe '<c>sc.exe</c>'</param>
+        /// <param name="launchArguments"></param>
+        /// <param name="timeout">Timeout for start up, if none is specified it will be 5 minutes.</param>
+        public SauceConnectProxy(string proxyDirectory, IDictionary<string, string> launchArguments, TimeSpan timeout)
         {
             this.arguments = launchArguments ?? throw new ArgumentNullException(nameof(launchArguments));
-            this.startTimeout = startTimeout == default(TimeSpan) ? TimeSpan.FromMinutes(5) : startTimeout;
+            this.timeout = timeout == default(TimeSpan) ? TimeSpan.FromMinutes(5) : timeout;
+
             if (string.IsNullOrWhiteSpace(proxyDirectory))
                 throw new ArgumentException("Value cannot be null or whitespace.", nameof(proxyDirectory));
 
@@ -62,91 +103,95 @@ namespace SauceConnectProxy
 
             this.proxyDirectory = proxyDirectory;
 
-            this.username = arguments[UserArgumentName];
+            this.Username = arguments[UserArgumentName];
+            this.AccessKey = arguments[AccessKeyArgumentName];
 
-            if (!launchArguments.ContainsKey(TunnelIdArguementName))
+            if (!launchArguments.ContainsKey(TunnelIdArgumentName))
             {
-                arguments[TunnelIdArguementName] = arguments[UserArgumentName];
+                arguments[TunnelIdArgumentName] = arguments[UserArgumentName];
             }
 
             this.sauceConnectRestClient = new SauceConnectRestClient(arguments[UserArgumentName], arguments[AccessKeyArgumentName]);
         }
 
-        public string Output { get; private set; }
+        /// <summary>
+        /// Gets the access key used.
+        /// </summary>
+        public string AccessKey { get; }
 
-        public bool Start()
+        /// <summary>
+        /// Gets the username used.
+        /// </summary>
+        public string Username { get; }
+
+        /// <summary>
+        /// Reads the process output.
+        /// </summary>
+        public string Output => ReadOutput();
+
+        /// <summary>
+        /// Gets teh proxy address.
+        /// </summary>
+        public Uri ProxyAddress { get; private set; }
+
+        /// <summary>
+        /// Starts the process and waits for the tunnel to establish.
+        /// </summary>
+        /// <returns></returns>
+        public async Task<bool> StartAsync()
         {
             var hasStarted = StartProcess();
             var tokenSource = new CancellationTokenSource();
-            var processOutput = ProcessOutput(tokenSource);
+            tokenSource.CancelAfter(timeout);
 
-            if(!processOutput.Wait(startTimeout))
-                tokenSource.Cancel();
-
-            //Output = processOutput.Result;
-
-            if (tokenSource.IsCancellationRequested)
-                throw new OperationCanceledException(Output, tokenSource.Token);
-            
-            //if (Output != null && Output.EndsWith(FailedToInitiateConnectionText, StringComparison.OrdinalIgnoreCase))
-            //    throw new SauceConnectProxyException(Output);
-
-            //this.information = ProcessOutput().Result;
-            //this.information = GetTunnelInformation();
-            this.information = processOutput.Result;
+            this.information = await ProcessOutput(tokenSource);
             this.information.Process = process;
+            this.ProxyAddress = new UriBuilder("http", "localHost", port, "wd/hub").Uri;
             return hasStarted;
         }
 
-        private Task<TunnelInformation> ProcessOutput(CancellationTokenSource tokenSource)
+        /// <inheritdoc/>
+        public void Dispose()
         {
-            var token = tokenSource.Token;
-            var processOutput = Task.Factory.StartNew(() =>
-            {
-                TunnelInformation tunnelInformation;
-                do
-                {
-                    var tunnelIds = sauceConnectRestClient.GetTunnelIdsAsync().Result;
-                    var tunnels = tunnelIds.Select(t => sauceConnectRestClient.GetTunnelnformation(t).Result);
-                    tunnelInformation = tunnels.FirstOrDefault(t => t.Status == TunnelStatus.Running &&
-                                                                    t.TunnelIdentifier != null &&
-                                                                    t.TunnelIdentifier == this.username);
-                } while (tunnelInformation == null && !token.IsCancellationRequested);
-                return tunnelInformation;
-               // TunnelInformation tunnelInformation = null;
-
-                //foreach (var tunnelId in tunnelIds)
-                //{
-                //    tunnelInformation = sauceConnectRestClient.GetTunnelnformation(tunnelId).Result;
-
-                //    if (tunnelInformation.Status == TunnelStatus.Running &&
-                //        tunnelInformation.TunnelIdentifier != null &&
-                //        tunnelInformation.TunnelIdentifier == this.username || token.IsCancellationRequested)
-                //    {
-                //        break;
-                //    }
-
-                //    Task.Delay(100, token);
-                //}
-                //return tunnelInformation;
-            }, tokenSource.Token);
-            //Output = process.StandardOutput.ReadToEnd();
-            return processOutput;
+            Task.WhenAll(ReleaseResources());
+            GC.SuppressFinalize(this);
         }
 
+        private async Task<TunnelInformation> ProcessOutput(CancellationTokenSource tokenSource)
+        {
+            var token = tokenSource.Token;
 
-        //string line;
-        //var output = new StringBuilder();
-        //do
-        //{
-        //    line = process.StandardOutput.ReadLine()?.Trim();
-        //    output.AppendLine(line);
-        //} while (!token.IsCancellationRequested &&
-        //         line != null &&
-        //         !line.EndsWith(FailedToInitiateConnectionText, StringComparison.OrdinalIgnoreCase) &&
-        //         !line.EndsWith(SuccessfullConnectionText, StringComparison.OrdinalIgnoreCase));
+            TunnelInformation tunnelInformation;
+            do
+            {
+                var tunnelIds = await sauceConnectRestClient.GetTunnelIdsAsync(token).ConfigureAwait(false);
+                var tunnels = await Task.WhenAll(tunnelIds.Select(async t => await sauceConnectRestClient.GetTunnelnformationAsync(t, token).ConfigureAwait(false))).ConfigureAwait(false);
+                tunnelInformation = tunnels.FirstOrDefault(t => t.Status == TunnelStatus.Running &&
+                                                                t.TunnelIdentifier != null &&
+                                                                t.TunnelIdentifier == this.Username);
+            } while (tunnelInformation == null && !token.IsCancellationRequested);
 
-        //return output.ToString().Trim();
+            return tunnelInformation;
+        }
+
+        private string ReadOutput()
+        {
+            var output = new StringBuilder();
+            var sw = Stopwatch.StartNew();
+            string newLine;
+            do
+            {
+                newLine = process.StandardOutput.ReadLine()?.Trim();
+                output.AppendLine(newLine);
+
+            } while (sw.ElapsedMilliseconds < 500 &&
+                     !string.IsNullOrWhiteSpace(newLine) &&
+                     !newLine.EndsWith(FailedToInitiateConnectionText, StringComparison.OrdinalIgnoreCase) &&
+                     !newLine.EndsWith(SuccessfullConnectionText, StringComparison.OrdinalIgnoreCase));
+            sw.Stop();
+            return output.ToString().Trim();
+        }
+
         private bool StartProcess()
         {
             var processInfo = new ProcessStartInfo(Path.Combine(proxyDirectory, ExecutableName))
@@ -176,28 +221,11 @@ namespace SauceConnectProxy
             return hasStarted;
         }
 
-        private TunnelInformation GetTunnelInformation()
+        private async Task ReleaseResources()
         {
-            var tunnelIds = sauceConnectRestClient.GetTunnelIdsAsync().Result.ToList();
-            foreach (var tunnelId in tunnelIds)
+            if ((await this.sauceConnectRestClient.GetTunnelIdsAsync(default(CancellationToken)).ConfigureAwait(false)).Any(i => i.Equals(information?.Id)))
             {
-                var tunnelInformation = sauceConnectRestClient.GetTunnelnformation(tunnelId).Result;
-
-                if (tunnelInformation.Status == TunnelStatus.Running &&
-                    tunnelInformation.TunnelIdentifier != null &&
-                    tunnelInformation.TunnelIdentifier == this.username)
-                {
-                    return tunnelInformation;
-                }
-            }
-            return new TunnelInformation();
-        }
-
-        private void ReleaseResources()
-        {
-            if (this.sauceConnectRestClient.GetTunnelIdsAsync().Result.Any(i => i.Equals(information?.Id)))
-            {
-                this.sauceConnectRestClient.DeleteTunnel(information?.Id).Wait();
+                await this.sauceConnectRestClient.DeleteTunnelAsync(information?.Id, default(CancellationToken)).ConfigureAwait(false);
             }
 
             if (!process.HasExited)
@@ -207,15 +235,9 @@ namespace SauceConnectProxy
             }
         }
 
-        public void Dispose()
-        {
-            ReleaseResources();
-            GC.SuppressFinalize(this);
-        }
-
         ~SauceConnectProxy()
         {
-            ReleaseResources();
+            Task.WhenAll(ReleaseResources());
         }
     }
 }

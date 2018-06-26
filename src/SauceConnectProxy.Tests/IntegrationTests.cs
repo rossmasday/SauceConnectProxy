@@ -4,18 +4,31 @@ using Xunit;
 
 namespace SauceConnectProxy.Tests
 {
+    using System.Threading.Tasks;
+    using OpenQA.Selenium.Chrome;
+    using OpenQA.Selenium.Remote;
+
     public class IntegrationTests
     {
-        private const string TestUsername = "Test Account";
-        private const string FailedToInitiateConnectionText = "Goodbye.";
         private const string SuccessfullConnectionText = "you may start your tests.";
 
         [Fact]
-        public void CanConnectToSauceLabs()
+        public async Task CanConnectToSauceLabs()
         {
-            using (var sauceProxy = new SauceConnectProxy("", "", 1234))
+            using (var sauceProxy = new SauceConnectProxy(1234))
             {
-                sauceProxy.Start();
+                await sauceProxy.StartAsync();
+
+                var options = (DesiredCapabilities) new ChromeOptions().ToCapabilities();
+                options.SetCapability("username", sauceProxy.Username);
+                options.SetCapability("accesskey", sauceProxy.AccessKey);
+                options.SetCapability("name", "SauceConnectProxyCanConnectToSauceLabs");
+                using (var driver = new RemoteWebDriver(sauceProxy.ProxyAddress, options))
+                {
+                    driver.Navigate().GoToUrl(new Uri("http://example.com/"));
+                    driver.Title.Should().Be("Example Domain");
+                }
+
                 sauceProxy.Output.Should().EndWith(SuccessfullConnectionText);
             }
         }
@@ -23,21 +36,10 @@ namespace SauceConnectProxy.Tests
         [Fact]
         public void TimeoutWillStopExecution()
         {
-            using (var sauceProxy = new SauceConnectProxy(TestUsername, Guid.Empty.ToString(), 1234, TimeSpan.FromSeconds(1)))
+            using (var sauceProxy = new SauceConnectProxy(1234, TimeSpan.FromSeconds(5)))
             {
-                Action action = () => sauceProxy.Start();
-                action.Should().ThrowExactly<OperationCanceledException>();
-            }
-        }
-
-        [Fact]
-        public void TerminatesApplicationWhenInvalidDataIsProvided()
-        {
-            using (var sauceProxy = new SauceConnectProxy(TestUsername, Guid.Empty.ToString(), 1234))
-            {
-                Action action = () => sauceProxy.Start();
-                action.Should().Throw<SauceConnectProxyException>().And.Message.Should().Contain("Starting up").And.EndWith(FailedToInitiateConnectionText);
-                sauceProxy.Output.Should().EndWith(FailedToInitiateConnectionText);
+                Func<Task> action = async () => await sauceProxy.StartAsync().ConfigureAwait(false);
+                action.Should().ThrowExactly<TaskCanceledException>();
             }
         }
     }
