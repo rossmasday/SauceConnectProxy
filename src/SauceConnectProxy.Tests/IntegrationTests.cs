@@ -1,12 +1,12 @@
-﻿using System;
-using FluentAssertions;
-using Xunit;
-
-namespace SauceConnectProxy.Tests
+﻿namespace SauceConnectProxy.Tests
 {
+    using System;
+    using System.Threading;
     using System.Threading.Tasks;
+    using FluentAssertions;
     using OpenQA.Selenium.Chrome;
     using OpenQA.Selenium.Remote;
+    using Xunit;
 
     public class IntegrationTests
     {
@@ -34,11 +34,29 @@ namespace SauceConnectProxy.Tests
         }
 
         [Fact]
+        public async Task CanConnectUseExistingConnection()
+        {
+            using (var sauceProxy1 = new SauceConnectProxy(1234))
+            {
+                await sauceProxy1.StartAsync();
+                sauceProxy1.Output.Should().EndWith(SuccessfullConnectionText);
+                using (var sauceProxy2 = new SauceConnectProxy(4445))
+                {
+                    await sauceProxy2.StartAsync();
+                    sauceProxy2.ProxyAddress.Should().Be(sauceProxy1.ProxyAddress);
+                    sauceProxy2.Output.Should().BeNull();
+                }
+            }
+        }
+
+        [Fact]
         public void TimeoutWillStopExecution()
         {
-            using (var sauceProxy = new SauceConnectProxy(1234, TimeSpan.FromSeconds(5)))
+            var tokenSource = new CancellationTokenSource();
+            tokenSource.CancelAfter(10000);
+            using (var sauceProxy = new SauceConnectProxy(1234))
             {
-                Func<Task> action = async () => await sauceProxy.StartAsync().ConfigureAwait(false);
+                Func<Task> action = async () => await sauceProxy.StartAsync(tokenSource.Token).ConfigureAwait(false);
                 action.Should().ThrowExactly<TaskCanceledException>();
             }
         }

@@ -14,19 +14,21 @@
 
     public sealed class SauceConnectProxy : IDisposable
     {
-        private readonly int port;
+        private int port;
         private const string FailedToInitiateConnectionText = "Goodbye.";
         private const string SuccessfullConnectionText = "you may start your tests.";
         private const string ExecutableName = "sc.exe";
-        private const string UserArgumentName = "--user";
-        private const string AccessKeyArgumentName = "--api-key";
-        private const string TunnelIdArgumentName = "--tunnel-identifier";
+        private const string UserFlagName = "--user";
+        private const string AccessKeyFlagName = "--api-key";
+        private const string TunnelIdFlagName = "--tunnel-identifier";
+        private const string PortFlagName = "--se-port";
         private readonly string proxyDirectory;
         private readonly SauceConnectRestClient sauceConnectRestClient;
         private readonly IDictionary<string, string> arguments;
         private readonly TimeSpan timeout;
         private Process process;
         private TunnelInformation information;
+        private bool previouslyRunning;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class with default Sauce labs environment variable setting for username and access key.
@@ -40,38 +42,16 @@
         /// <summary>
         /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
         /// </summary>
-        /// <param name="port">The port to use.</param>
-        /// <param name="timeout"></param>
-        public SauceConnectProxy(int port, TimeSpan timeout)
-            : this(EnvironmentConfig.SauceUsername, EnvironmentConfig.SauceAccessKey, port, timeout)
-        {
-        }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
-        /// </summary>
         /// <param name="username">The usename to use to connect to the Sauce Labs.</param>
         /// <param name="accessKey">The access key to use to connect to Sauce Labs.</param>
         /// <param name="port">The port to use.</param>
         public SauceConnectProxy(string username, string accessKey, int port)
-            : this(username, accessKey, port, default(TimeSpan))
-        {
-        }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="SauceConnectProxy"/> class
-        /// </summary>
-        /// <param name="username">The usename to use to connect to the Sauce Labs.</param>
-        /// <param name="accessKey">The access key to use to connect to Sauce Labs.</param>
-        /// <param name="port">The port to use.</param>
-        /// <param name="timeout">Timeout for start up, if none is specified it will be 5 minutes.</param>
-        public SauceConnectProxy(string username, string accessKey, int port, TimeSpan timeout)
             : this(Directory.GetCurrentDirectory(), new Dictionary<string, string>
             {
-                { UserArgumentName, username },
-                { AccessKeyArgumentName, accessKey },
-                { "--se-port", port.ToString() }
-            }, timeout)
+                { UserFlagName, username },
+                { AccessKeyFlagName, accessKey },
+                { PortFlagName, port.ToString() }
+            })
         {
             this.port = port;
         }
@@ -81,8 +61,7 @@
         /// </summary>
         /// <param name="proxyDirectory">The directory containing the proxy exe '<c>sc.exe</c>'</param>
         /// <param name="launchArguments"></param>
-        /// <param name="timeout">Timeout for start up, if none is specified it will be 5 minutes.</param>
-        public SauceConnectProxy(string proxyDirectory, IDictionary<string, string> launchArguments, TimeSpan timeout)
+        public SauceConnectProxy(string proxyDirectory, IDictionary<string, string> launchArguments)
         {
             this.arguments = launchArguments ?? throw new ArgumentNullException(nameof(launchArguments));
             this.timeout = timeout == default(TimeSpan) ? TimeSpan.FromMinutes(5) : timeout;
@@ -103,15 +82,15 @@
 
             this.proxyDirectory = proxyDirectory;
 
-            this.Username = arguments[UserArgumentName];
-            this.AccessKey = arguments[AccessKeyArgumentName];
+            this.Username = arguments[UserFlagName];
+            this.AccessKey = arguments[AccessKeyFlagName];
 
-            if (!launchArguments.ContainsKey(TunnelIdArgumentName))
+            if (!launchArguments.ContainsKey(TunnelIdFlagName))
             {
-                arguments[TunnelIdArgumentName] = arguments[UserArgumentName];
+                arguments[TunnelIdFlagName] = this.Username;
             }
 
-            this.sauceConnectRestClient = new SauceConnectRestClient(arguments[UserArgumentName], arguments[AccessKeyArgumentName]);
+            this.sauceConnectRestClient = new SauceConnectRestClient(arguments[UserFlagName], arguments[AccessKeyFlagName]);
         }
 
         /// <summary>
@@ -125,9 +104,9 @@
         public string Username { get; }
 
         /// <summary>
-        /// Reads the process output.
+        /// Gets the process output.
         /// </summary>
-        public string Output => ReadOutput();
+        public string Output { get; private set; }
 
         /// <summary>
         /// Gets teh proxy address.
@@ -138,14 +117,29 @@
         /// Starts the process and waits for the tunnel to establish.
         /// </summary>
         /// <returns></returns>
-        public async Task<bool> StartAsync()
+        public Task<bool> StartAsync()
         {
-            var hasStarted = StartProcess();
             var tokenSource = new CancellationTokenSource();
             tokenSource.CancelAfter(timeout);
+            return StartAsync(tokenSource.Token);
+        }
 
-            this.information = await ProcessOutput(tokenSource);
-            this.information.Process = process;
+
+        /// <summary>
+        /// Starts the process and waits for the tunnel to establish.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns></returns>
+        public async Task<bool> StartAsync(CancellationToken cancellationToken)
+        {
+            var info = await GetTunnelInformation(cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var hasStarted = info != null && info.Metadata.Hostname == Environment.MachineName
+                ? await Task.Run(() => QueryExistingProxyAndSetValues(info), cancellationToken)
+                : await StartUpNewProxy(cancellationToken);
+
             this.ProxyAddress = new UriBuilder("http", "localHost", port, "wd/hub").Uri;
             return hasStarted;
         }
@@ -153,38 +147,89 @@
         /// <inheritdoc/>
         public void Dispose()
         {
-            Task.WhenAll(ReleaseResources());
+            ReleaseResources().GetAwaiter().GetResult();
             GC.SuppressFinalize(this);
         }
 
-        private async Task<TunnelInformation> ProcessOutput(CancellationTokenSource tokenSource)
-        {
-            var token = tokenSource.Token;
 
+        private async Task<bool> StartUpNewProxy(CancellationToken token)
+        {
+            var hasStarted = StartProcess();
+
+            this.Output = ReadOutput(token);
+            token.ThrowIfCancellationRequested();
+            if (!Output.EndsWith(SuccessfullConnectionText))
+            {
+                throw new SauceConnectProxyException(Output);
+            }
+
+            this.information = await WaitForTunnelInformation(token);
+            this.information.Process = process;
+            return hasStarted;
+        }
+
+        private bool QueryExistingProxyAndSetValues(TunnelInformation info)
+        {
+            this.information = info;
+            var start = this.information.Metadata.Command.IndexOf('-');
+            var parameters = this.information.Metadata.Command.Trim().Substring(start).Split(' ');
+
+            if (parameters.Length % 2 != 0)
+            {
+                throw new SauceConnectProxyException($"Could not parse metadata parameters from tunnel information, because there is not an even number or arguments: '{info.Metadata.Command}'");
+            }
+
+            IDictionary<string, string> commandLineParameters = new Dictionary<string, string>();
+            for (var i = 0; i < parameters.Length; i += 2)
+            {
+                commandLineParameters.Add(parameters[i], parameters[i + 1]);
+            }
+
+            this.port = int.Parse(SearchForParameter(commandLineParameters, info, PortFlagName, "-P"));
+            this.previouslyRunning = true;
+            return true;
+        }
+
+        private static string SearchForParameter(IDictionary<string, string> commandLineParameters, TunnelInformation info, string fullFlag, string shortFlag, bool throwIfMissing = true)
+        {
+            if (!commandLineParameters.TryGetValue(fullFlag, out var parameter) && !commandLineParameters.TryGetValue(shortFlag, out parameter) && throwIfMissing)
+            {
+                throw new SauceConnectProxyException($"Proxy seems to be open but could not locate either flag [{fullFlag}, {shortFlag}] in the launch command '{info.Metadata?.Command}");
+            }
+            return parameter;
+        }
+
+        private async Task<TunnelInformation> WaitForTunnelInformation(CancellationToken token)
+        {
             TunnelInformation tunnelInformation;
             do
             {
-                var tunnelIds = await sauceConnectRestClient.GetTunnelIdsAsync(token).ConfigureAwait(false);
-                var tunnels = await Task.WhenAll(tunnelIds.Select(async t => await sauceConnectRestClient.GetTunnelnformationAsync(t, token).ConfigureAwait(false))).ConfigureAwait(false);
-                tunnelInformation = tunnels.FirstOrDefault(t => t.Status == TunnelStatus.Running &&
-                                                                t.TunnelIdentifier != null &&
-                                                                t.TunnelIdentifier == this.Username);
-            } while (tunnelInformation == null && !token.IsCancellationRequested);
-
+                tunnelInformation = await GetTunnelInformation(token);
+            } while ((tunnelInformation == null || tunnelInformation.Status != TunnelStatus.Running) && !token.IsCancellationRequested);
+            token.ThrowIfCancellationRequested();
             return tunnelInformation;
         }
 
-        private string ReadOutput()
+        private async Task<TunnelInformation> GetTunnelInformation(CancellationToken token)
+        {
+            var tunnelIds = await sauceConnectRestClient.GetTunnelIdsAsync(token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            var tunnels = await Task.WhenAll(tunnelIds.Select(async id => await sauceConnectRestClient.GetTunnelnformationAsync(id, token).ConfigureAwait(false))).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            return tunnels.FirstOrDefault(t => t.Metadata.Hostname == Environment.MachineName);
+        }
+
+        private string ReadOutput(CancellationToken token)
         {
             var output = new StringBuilder();
             var sw = Stopwatch.StartNew();
             string newLine;
             do
             {
+                token.ThrowIfCancellationRequested();
                 newLine = process.StandardOutput.ReadLine()?.Trim();
                 output.AppendLine(newLine);
-
-            } while (sw.ElapsedMilliseconds < 500 &&
+            } while (sw.Elapsed < timeout &&
                      !string.IsNullOrWhiteSpace(newLine) &&
                      !newLine.EndsWith(FailedToInitiateConnectionText, StringComparison.OrdinalIgnoreCase) &&
                      !newLine.EndsWith(SuccessfullConnectionText, StringComparison.OrdinalIgnoreCase));
@@ -223,12 +268,18 @@
 
         private async Task ReleaseResources()
         {
-            if ((await this.sauceConnectRestClient.GetTunnelIdsAsync(default(CancellationToken)).ConfigureAwait(false)).Any(i => i.Equals(information?.Id)))
+            if (previouslyRunning)
+            {
+                return;
+            }
+
+            information = await GetTunnelInformation(default(CancellationToken));
+            if (information != null)
             {
                 await this.sauceConnectRestClient.DeleteTunnelAsync(information?.Id, default(CancellationToken)).ConfigureAwait(false);
             }
 
-            if (!process.HasExited)
+            if ((!process?.HasExited).GetValueOrDefault())
             {
                 process?.Kill();
                 process?.WaitForExit();
@@ -237,7 +288,7 @@
 
         ~SauceConnectProxy()
         {
-            Task.WhenAll(ReleaseResources());
+            ReleaseResources().GetAwaiter().GetResult();
         }
     }
 }

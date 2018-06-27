@@ -58,7 +58,7 @@
         }
 
         /// <summary>
-        /// Get active tunnel Ids.
+        /// Retrieves all running tunnels for a specific user
         /// </summary>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
@@ -68,7 +68,7 @@
         }
 
         /// <summary>
-        /// Get a count of the number of jobs running on a tunnel.
+        /// Get the number of jobs that are running through the tunnel over the past 60 seconds.
         /// </summary>
         /// <param name="tunnelId">The Id of the tunnel.</param>
         /// <param name="cancellationToken">An instance of <see cref="CancellationToken"/>.</param>
@@ -79,7 +79,7 @@
         }
 
         /// <summary>
-        /// Get information for a tunnel.
+        /// Get information for a tunnel given its ID.
         /// </summary>
         /// <param name="tunnelId">The Id of the tunnel.</param>
         /// <param name="cancellationToken">An instance of <see cref="CancellationToken"/>.</param>
@@ -90,7 +90,7 @@
         }
 
         /// <summary>
-        /// Delete an active tunnel.
+        /// Shuts down a tunnel given its ID.
         /// </summary>
         /// <param name="tunnelId">The Id of the tunnel.</param>
         /// <param name="cancellationToken">An instance of <see cref="CancellationToken"/>.</param>

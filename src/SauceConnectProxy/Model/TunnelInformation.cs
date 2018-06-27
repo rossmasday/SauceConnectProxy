@@ -18,5 +18,7 @@
         public string TunnelIdentifier { get; set; }
 
         public Process Process { get; internal set; }
+
+        public Metadata Metadata { get; set; }
     }
 }
